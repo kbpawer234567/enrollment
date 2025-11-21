@@ -1,77 +1,109 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM === URL of the allowlist ===
+REM =====================================================
+REM SETTINGS
+REM =====================================================
+
 set "URL=https://raw.githubusercontent.com/kbpawer234567/enrollment/refs/heads/main/login.txt"
-set "LOCALFILE=%~dp0login.txt"
+set "ACCOUNTFILE=%~dp0login.txt"
 
 echo [1/4] Downloading login list...
-powershell -Command "Invoke-WebRequest '%URL%' -OutFile '%LOCALFILE%'"
+powershell -Command "Invoke-WebRequest '%URL%' -OutFile '%ACCOUNTFILE%'"
 
-if not exist "%LOCALFILE%" (
-    echo ERROR: login.txt could not be downloaded.
+if not exist "%ACCOUNTFILE%" (
+    echo ERROR: login.txt could not be downloaded!
     pause
     exit /b 1
 )
 
-echo [2/4] Processing allowlist...
+echo.
+echo [2/4] Loading allowed Microsoft accounts...
 
-set "ALLOWLIST="
+set "MSLIST="
 
-REM Read and convert entries
-for /F "usebackq tokens=* delims=" %%A in ("%LOCALFILE%") do (
+REM ================================================
+REM READ MICROSOFT ACCOUNTS FROM login.txt
+REM ================================================
+for /F "usebackq tokens=* delims=" %%A in ("%ACCOUNTFILE%") do (
     if not "%%A"=="" (
-        set "LINE=%%A"
+        set "EMAIL=%%A"
+        set "MSEntry=MicrosoftAccount\%%A"
 
-        REM If entry contains @, treat it as an Microsoft Account email
-        echo !LINE! | find "@" >nul
-        if !errorlevel! == 0 (
-            set "LINE=MicrosoftAccount\%%A"
-        )
-
-        if defined ALLOWLIST (
-            set "ALLOWLIST=!ALLOWLIST!,!LINE!"
+        if "!MSLIST!"=="" (
+            set "MSLIST=!MSEntry!"
         ) else (
-            set "ALLOWLIST=!LINE!"
+            set "MSLIST=!MSLIST!,!MSEntry!"
         )
     )
 )
 
-echo [3/4] Adding ALL local accounts...
+echo Allowed Microsoft Accounts:
+echo !MSLIST!
+echo.
 
-REM Enumerate local accounts
-for /F "skip=1 tokens=1,*" %%A in ('wmic useraccount where "localaccount=true" get name 2^>nul') do (
-    if not "%%A"=="" (
-        set "LOCALACC=.\%%A"
-        if defined ALLOWLIST (
-            set "ALLOWLIST=!ALLOWLIST!,!LOCALACC!"
+REM ================================================
+REM ENUMERATE EXISTING MICROSOFT ACCOUNTS
+REM ================================================
+echo [3/4] Checking existing Microsoft accounts...
+
+set "EXISTINGMS="
+
+for /F "skip=1 tokens=1,*" %%A in ('wmic useraccount get name 2^>nul') do (
+    echo %%A | findstr /i "MicrosoftAccount\\" >nul
+    if !errorlevel! == 0 (
+        if "!EXISTINGMS!"=="" (
+            set "EXISTINGMS=%%A"
         ) else (
-            set "ALLOWLIST=!LOCALACC!"
+            set "EXISTINGMS=!EXISTINGMS!,%%A"
         )
     )
 )
 
-echo Allow list will be:
-echo %ALLOWLIST%
+echo Existing Microsoft Accounts:
+echo !EXISTINGMS!
 echo.
 
-REM === Update Local Security Policy ===
+REM ================================================
+REM ADD MISSING MICROSOFT ACCOUNTS
+REM ================================================
+echo Adding missing Microsoft accounts...
 
-echo [4/4] Updating Local Security Policy...
-secedit /export /cfg "%~dp0secpol.cfg" >nul 2>&1
+for %%A in (!MSLIST!) do (
+    echo !EXISTINGMS! | findstr /i /c:"%%A" >nul
+    if !errorlevel! neq 0 (
+        echo Adding %%A ...
+        net user "%%A" /add >nul 2>&1
+    )
+)
 
-powershell -Command ^
-    "(Get-Content '%~dp0secpol.cfg') ^
-    -replace 'SeInteractiveLogonRight =.*', 'SeInteractiveLogonRight = %ALLOWLIST%' ^
-    | Set-Content '%~dp0secpol.cfg'"
+REM ================================================
+REM DELETE MICROSOFT ACCOUNTS NOT IN LIST
+REM ================================================
+echo Deleting unlisted Microsoft accounts...
 
-secedit /configure /db secedit.sdb /cfg "%~dp0secpol.cfg" /areas USER_RIGHTS >nul 2>&1
+for %%A in (!EXISTINGMS!) do (
+    echo !MSLIST! | findstr /i /c:"%%A" >nul
+    if !errorlevel! neq 0 (
+        echo Removing Microsoft account %%A ...
+
+        REM Remove user
+        net user "%%A" /delete >nul 2>&1
+
+        REM Extract local folder name by stripping prefix
+        set "FOLDER=%%A"
+        set "FOLDER=!FOLDER:MicrosoftAccount\=!"
+
+        REM Wipe profile folder
+        if exist "C:\Users\!FOLDER!" (
+            echo Wiping profile folder: C:\Users\!FOLDER!
+            rmdir /s /q "C:\Users\!FOLDER!"
+        )
+    )
+)
 
 echo.
-echo DONE!
-echo Local login is now allowed for:
-echo   - ALL local accounts
-echo   - The email accounts listed in login.txt
-echo.
-echo Restart recommended.
+echo [4/4] DONE!
+echo Microsoft accounts are now fully synced to login.txt.
+echo Local users preserved.
 pause
